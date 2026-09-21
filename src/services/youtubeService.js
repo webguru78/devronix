@@ -11,6 +11,19 @@ const FFMPEG_BINARY_PATH = ffmpegInstaller.path;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Player clients to force yt-dlp into, in order of preference.
+// "android" and "ios" are mobile-app API endpoints that YouTube's bot-detection
+// flags far less often than the "web"/"tv"/"visionos" clients — those are the
+// ones that were producing "Sign in to confirm you're not a bot" on cloud IPs.
+// If you later hit persistent failures even with these, the next escalation is
+// authenticated cookies (see COOKIES_FILE_PATH below) rather than more clients.
+const YT_DLP_PLAYER_CLIENTS = "android,ios";
+
+// Optional: path to a cookies.txt file (Netscape format) exported from a real
+// logged-in YouTube session. Leave unset unless android/ios client alone stops
+// being enough — cookies are a stronger but higher-maintenance fallback.
+const COOKIES_FILE_PATH = process.env.YT_COOKIES_PATH || null;
+
 // Shared Innertube instance (lazy initialized)
 let _innertubeInstance = null;
 async function getInnertube(retrievePlayer = false) {
@@ -48,6 +61,21 @@ function resolveYtDlpPath() {
   } catch (_) {}
 
   return null;
+}
+
+/**
+ * Builds the shared set of yt-dlp CLI flags that force a bot-resistant player
+ * client (and cookies, if configured). Appended to every yt-dlp invocation.
+ */
+function buildAntiDetectionArgs() {
+  const args = [
+    "--extractor-args",
+    `youtube:player_client=${YT_DLP_PLAYER_CLIENTS}`,
+  ];
+  if (COOKIES_FILE_PATH && fs.existsSync(COOKIES_FILE_PATH)) {
+    args.push("--cookies", COOKIES_FILE_PATH);
+  }
+  return args;
 }
 
 /**
@@ -130,6 +158,7 @@ export const youtubeService = {
             "--no-warnings",
             "--socket-timeout",
             "20",
+            ...buildAntiDetectionArgs(),
             url,
           ]);
           let stdout = "";
@@ -166,15 +195,12 @@ export const youtubeService = {
           });
 
           child.on("error", (err) => reject(err));
-          setTimeout(
-            () => {
-              try {
-                child.kill();
-              } catch (_) {}
-              reject(new Error("yt-dlp timeout"));
-            },
-            30000,
-          );
+          setTimeout(() => {
+            try {
+              child.kill();
+            } catch (_) {}
+            reject(new Error("yt-dlp timeout"));
+          }, 30000);
         });
       } catch (ytDlpErr) {
         console.warn(
@@ -244,16 +270,25 @@ export const youtubeService = {
             "bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720][ext=mp4]/b[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
 
           const args = [
-            "--ffmpeg-location", FFMPEG_BINARY_PATH,
-            "-f", formatSelection,
-            "--merge-output-format", "mp4",
+            "--ffmpeg-location",
+            FFMPEG_BINARY_PATH,
+            "-f",
+            formatSelection,
+            "--merge-output-format",
+            "mp4",
             "--no-playlist",
             "--no-warnings",
-            "--socket-timeout", "30",
-            "--retries", "3",
-            "--fragment-retries", "3",
-            "--extractor-retries", "3",
-            "-o", outputPath,
+            "--socket-timeout",
+            "30",
+            "--retries",
+            "3",
+            "--fragment-retries",
+            "3",
+            "--extractor-retries",
+            "3",
+            ...buildAntiDetectionArgs(),
+            "-o",
+            outputPath,
             url,
           ];
 
@@ -282,7 +317,9 @@ export const youtubeService = {
               resolve(outputPath);
             } else {
               reject(
-                new Error(`yt-dlp exited with code ${code}: ${stderr.trim() || stdout.trim() || "Unknown error"}`),
+                new Error(
+                  `yt-dlp exited with code ${code}: ${stderr.trim() || stdout.trim() || "Unknown error"}`,
+                ),
               );
             }
           });
@@ -296,7 +333,9 @@ export const youtubeService = {
           `[YouTube Service]: yt-dlp download failed (${ytDlpErr.message}). Trying Innertube fallback...`,
         );
         // Clean up partial file
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
+        try {
+          if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+        } catch (_) {}
       }
     }
 
@@ -350,7 +389,6 @@ export const youtubeService = {
       "Failed to download YouTube video. The video may be private, age-restricted, or unavailable. Make sure the video is public and accessible.",
     );
   },
-
 
   /**
    * Helper: downloads a direct URL to a local file path using Node fetch + stream.
