@@ -19,11 +19,6 @@ const __dirname = path.dirname(__filename);
 // authenticated cookies (see COOKIES_FILE_PATH below) rather than more clients.
 const YT_DLP_PLAYER_CLIENTS = "android,ios";
 
-// Optional: path to a cookies.txt file (Netscape format) exported from a real
-// logged-in YouTube session. Leave unset unless android/ios client alone stops
-// being enough — cookies are a stronger but higher-maintenance fallback.
-const COOKIES_FILE_PATH = process.env.YT_COOKIES_PATH || null;
-
 // Shared Innertube instance (lazy initialized)
 let _innertubeInstance = null;
 async function getInnertube(retrievePlayer = false) {
@@ -72,8 +67,22 @@ function buildAntiDetectionArgs() {
     "--extractor-args",
     `youtube:player_client=${YT_DLP_PLAYER_CLIENTS}`,
   ];
-  if (COOKIES_FILE_PATH && fs.existsSync(COOKIES_FILE_PATH)) {
-    args.push("--cookies", COOKIES_FILE_PATH);
+  // Read the env var fresh on every call (NOT cached at module-import time) —
+  // in ESM, all `import` statements execute before dotenv.config() runs in
+  // server.js, so a top-level `process.env.YT_COOKIES_PATH` read at import
+  // time would always see undefined even when .env has the right value.
+  const cookiesPath = process.env.YT_COOKIES_PATH || null;
+  if (cookiesPath && fs.existsSync(cookiesPath)) {
+    args.push("--cookies", cookiesPath);
+    console.log(`[YouTube Service]: Using cookies file: ${cookiesPath}`);
+  } else if (cookiesPath) {
+    console.warn(
+      `[YouTube Service]: YT_COOKIES_PATH is set (${cookiesPath}) but file not found on disk.`,
+    );
+  } else {
+    console.warn(
+      `[YouTube Service]: YT_COOKIES_PATH not set — yt-dlp running without cookies.`,
+    );
   }
   return args;
 }
