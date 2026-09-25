@@ -1,29 +1,29 @@
 import { spawn, execSync } from "child_process";
 import path from "path";
-import fs from "fs";
-import { createWriteStream } from "fs";
+import fs, { createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
+import { Readable } from "stream";
 import { fileURLToPath } from "url";
-import { Innertube } from "youtubei.js";
+import { Innertube, Log } from "youtubei.js";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
+
+// YouTube.js ke internal warnings/logs ko suppress karein
+Log.setLevel(Log.Level.NONE);
 
 const FFMPEG_BINARY_PATH = ffmpegInstaller.path;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Player clients to force yt-dlp into, in order of preference.
-// "android" and "ios" are mobile-app API endpoints that YouTube's bot-detection
-// flags far less often than the "web"/"tv"/"visionos" clients — those are the
-// ones that were producing "Sign in to confirm you're not a bot" on cloud IPs.
-// If you later hit persistent failures even with these, the next escalation is
-// authenticated cookies (see COOKIES_FILE_PATH below) rather than more clients.
 const YT_DLP_PLAYER_CLIENTS = "android,ios";
 
 // Shared Innertube instance (lazy initialized)
 let _innertubeInstance = null;
 async function getInnertube(retrievePlayer = false) {
-  if (!_innertubeInstance || retrievePlayer) {
-    return await Innertube.create({ retrieve_player: retrievePlayer });
+  if (!_innertubeInstance) {
+    _innertubeInstance = await Innertube.create({
+      retrieve_player: retrievePlayer,
+    });
   }
   return _innertubeInstance;
 }
@@ -59,18 +59,14 @@ function resolveYtDlpPath() {
 }
 
 /**
- * Builds the shared set of yt-dlp CLI flags that force a bot-resistant player
- * client (and cookies, if configured). Appended to every yt-dlp invocation.
+ * Builds anti-detection args for yt-dlp
  */
 function buildAntiDetectionArgs() {
   const args = [
     "--extractor-args",
     `youtube:player_client=${YT_DLP_PLAYER_CLIENTS}`,
   ];
-  // Read the env var fresh on every call (NOT cached at module-import time) —
-  // in ESM, all `import` statements execute before dotenv.config() runs in
-  // server.js, so a top-level `process.env.YT_COOKIES_PATH` read at import
-  // time would always see undefined even when .env has the right value.
+
   const cookiesPath = process.env.YT_COOKIES_PATH || null;
   if (cookiesPath && fs.existsSync(cookiesPath)) {
     args.push("--cookies", cookiesPath);
@@ -104,15 +100,7 @@ function extractVideoId(url) {
 
 export const youtubeService = {
   /**
-   * Fetches video metadata (title, duration, thumbnail) from YouTube URL.
-   *
-   * Strategy order:
-   *  1. youtubei.js (Innertube) — fast, no auth, accurate duration
-   *  2. yt-dlp binary           — full metadata fallback
-   *  3. oEmbed + ytdl-core      — last resort (no duration from oEmbed)
-   *
-   * @param {string} url - Valid YouTube URL
-   * @returns {Promise<{ id: string, title: string, duration: number, thumbnail: string, channel: string }>}
+   * Fetches video metadata
    */
   async getVideoInfo(url) {
     if (!url || typeof url !== "string") {
@@ -121,16 +109,16 @@ export const youtubeService = {
 
     const videoId = extractVideoId(url);
 
-    // ── Strategy 1: youtubei.js (Innertube) — most reliable for duration ──
+    // ── Strategy 1: youtubei.js (Innertube) ──
     try {
-      const yt = await Innertube.create({ retrieve_player: false });
+      const yt = await getInnertube(false);
       const info = await yt.getBasicInfo(videoId || url);
       const basic = info.basic_info || {};
 
       const thumbnails = basic.thumbnail || [];
       const bestThumb =
         thumbnails.length > 0
-          ? thumbnails[0].url
+          ? thumbnails[0]?.url
           : videoId
             ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
             : "";
@@ -156,7 +144,7 @@ export const youtubeService = {
       );
     }
 
-    // ── Strategy 2: yt-dlp binary (full metadata) ──
+    // ── Strategy 2: yt-dlp binary ──
     const ytDlpPath = resolveYtDlpPath();
     if (ytDlpPath) {
       try {
@@ -218,7 +206,7 @@ export const youtubeService = {
       }
     }
 
-    // ── Strategy 3: oEmbed (title/thumbnail only, no duration) ──
+    // ── Strategy 3: oEmbed ──
     try {
       const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
       const resp = await fetch(oembedUrl, {
@@ -254,19 +242,12 @@ export const youtubeService = {
   },
 
   /**
-   * Downloads a YouTube video in 720p MP4 format with audio.
-   * Strategy order:
-   *  1. yt-dlp binary with FFmpeg (most reliable — handles all formats, cipher, age-restriction)
-   *  2. youtubei.js muxed MP4 stream (direct URL fallback for non-ciphered videos)
-   *
-   * @param {string} url - YouTube URL
-   * @param {string} outputPath - Local file path where .mp4 will be saved
-   * @returns {Promise<string>} outputPath
+   * Downloads a YouTube video
    */
   async downloadVideo(url, outputPath) {
     const videoId = extractVideoId(url);
 
-    // ── Strategy 1: yt-dlp binary with FFmpeg (primary — handles everything) ──
+    // ── Strategy 1: yt-dlp binary with FFmpeg ──
     const ytDlpPath = resolveYtDlpPath();
     if (ytDlpPath) {
       try {
@@ -274,7 +255,6 @@ export const youtubeService = {
           `[YouTube Service]: Downloading with yt-dlp (${ytDlpPath}) -> ${outputPath}`,
         );
         await new Promise((resolve, reject) => {
-          // Try multiple format selections — most permissive last
           const formatSelection =
             "bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720][ext=mp4]/b[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
 
@@ -341,20 +321,19 @@ export const youtubeService = {
         console.warn(
           `[YouTube Service]: yt-dlp download failed (${ytDlpErr.message}). Trying Innertube fallback...`,
         );
-        // Clean up partial file
         try {
           if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
         } catch (_) {}
       }
     }
 
-    // ── Strategy 2: youtubei.js muxed MP4 (fallback for non-ciphered formats) ──
+    // ── Strategy 2: youtubei.js muxed MP4 ──
     try {
       console.log(
         `[YouTube Service]: Attempting Innertube muxed download for ${videoId || url}...`,
       );
 
-      const yt = await Innertube.create({ retrieve_player: true });
+      const yt = await getInnertube(true);
       const info = await yt.getBasicInfo(videoId || url);
 
       const streamingData = info.streaming_data;
@@ -362,7 +341,6 @@ export const youtubeService = {
         throw new Error("No streaming data returned from Innertube");
       }
 
-      // Muxed (video+audio) mp4 formats — these sometimes have direct URLs
       const muxedFormats = (streamingData.formats || []).filter(
         (f) => f.mime_type?.includes("video/mp4") && f.url,
       );
@@ -400,7 +378,7 @@ export const youtubeService = {
   },
 
   /**
-   * Helper: downloads a direct URL to a local file path using Node fetch + stream.
+   * Safe stream downloader
    */
   async _downloadUrl(directUrl, outputPath) {
     const resp = await fetch(directUrl, {
@@ -409,37 +387,15 @@ export const youtubeService = {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
         Referer: "https://www.youtube.com/",
       },
-      signal: AbortSignal.timeout(300000), // 5 minutes
+      signal: AbortSignal.timeout(300000), // 5 mins
     });
 
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
     }
 
+    const nodeStream = Readable.fromWeb(resp.body);
     const fileStream = createWriteStream(outputPath);
-
-    await new Promise((resolve, reject) => {
-      const reader = resp.body.getReader();
-
-      function pump() {
-        reader
-          .read()
-          .then(({ done, value }) => {
-            if (done) {
-              fileStream.end();
-              return;
-            }
-            fileStream.write(Buffer.from(value), (err) => {
-              if (err) return reject(err);
-              pump();
-            });
-          })
-          .catch(reject);
-      }
-
-      fileStream.on("finish", resolve);
-      fileStream.on("error", reject);
-      pump();
-    });
+    await pipeline(nodeStream, fileStream);
   },
 };

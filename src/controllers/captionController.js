@@ -1,10 +1,15 @@
 import { cloudinaryService } from "../services/cloudinaryService.js";
+import { ffmpegService } from "../services/ffmpegService.js";
 import { whisperService } from "../services/whisperService.js";
 import { seoMetadataService } from "../services/seoMetadataService.js";
 import { CaptionProject } from "../models/CaptionProject.js";
 import { formatWhisperToCaptions } from "../utils/captionFormatter.js";
 import { deductCaptionCredit } from "../middleware/creditMiddleware.js";
 import mongoose from "mongoose";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import crypto from "crypto";
 
 export const captionController = {
   /**
@@ -68,6 +73,7 @@ export const captionController = {
       if (mongoose.connection.readyState === 1) {
         try {
           savedProject = await CaptionProject.create({
+            userId: req.user._id,
             title: originalName,
             videoUrl: videoUrl || "local_blob",
             publicId: cloudinaryResult?.publicId || null,
@@ -133,7 +139,7 @@ export const captionController = {
       if (mongoose.connection.readyState !== 1) {
         return res.status(200).json({ success: true, projects: [] });
       }
-      const projects = await CaptionProject.find()
+      const projects = await CaptionProject.find({ userId: req.user._id })
         .sort({ createdAt: -1 })
         .limit(20);
       return res
@@ -149,7 +155,10 @@ export const captionController = {
    */
   async getProjectById(req, res) {
     try {
-      const project = await CaptionProject.findById(req.params.id);
+      const project = await CaptionProject.findOne({
+        _id: req.params.id,
+        userId: req.user._id,
+      });
       if (!project) {
         return res
           .status(404)
@@ -166,14 +175,17 @@ export const captionController = {
    */
   async updateProject(req, res) {
     try {
-      const { captions, styles, title } = req.body;
+      const { captions, styles, title, outputUrl, downloadUrl, outputPublicId } = req.body;
       const updateData = {};
       if (captions) updateData.captions = captions;
       if (styles) updateData.styles = styles;
       if (title) updateData.title = title;
+      if (outputUrl) updateData.outputUrl = outputUrl;
+      if (downloadUrl) updateData.downloadUrl = downloadUrl;
+      if (outputPublicId) updateData.outputPublicId = outputPublicId;
 
-      const updated = await CaptionProject.findByIdAndUpdate(
-        req.params.id,
+      const updated = await CaptionProject.findOneAndUpdate(
+        { _id: req.params.id, userId: req.user._id },
         { $set: updateData },
         { new: true },
       );
@@ -320,6 +332,84 @@ export const captionController = {
   },
 
   /**
+   * Upload rendered video with burned-in captions directly to Cloudinary
+   */
+  async uploadRenderedVideo(req, res) {
+    let inputPath;
+    let normalizedPath;
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "No rendered video file provided.",
+        });
+      }
+
+      const originalName = req.file.originalname || `rendered_${Date.now()}.mp4`;
+      console.log(`[Cloudinary Render Upload]: Uploading ${originalName} (${(req.file.size / 1024 / 1024).toFixed(2)} MB)...`);
+
+      const tempId = crypto.randomBytes(8).toString("hex");
+      inputPath = path.join(os.tmpdir(), `verbatim-render-${tempId}-input`);
+      normalizedPath = path.join(os.tmpdir(), `verbatim-render-${tempId}.mp4`);
+      await fs.writeFile(inputPath, req.file.buffer);
+      await ffmpegService.normalizeRenderedVideo({ inputPath, outputPath: normalizedPath });
+      const normalizedBuffer = await fs.readFile(normalizedPath);
+
+      const cloudinaryResult = await cloudinaryService.uploadVideoBuffer(
+        normalizedBuffer,
+        originalName.replace(/\.[^/.]+$/, ".mp4")
+      );
+
+      // Create attachment download URL for 1-click direct download
+      const secureUrl = cloudinaryResult.url;
+      const downloadUrl = secureUrl.includes("/upload/")
+        ? secureUrl.replace("/upload/", "/upload/fl_attachment/")
+        : secureUrl;
+
+      const projectId = req.body?.projectId || req.query?.projectId;
+      let projectUpdated = false;
+      if (projectId && mongoose.connection.readyState === 1) {
+        const updatedProject = await CaptionProject.findOneAndUpdate(
+          { _id: projectId, userId: req.user._id },
+          {
+            $set: {
+              outputUrl: secureUrl,
+              downloadUrl,
+              outputPublicId: cloudinaryResult.publicId || null,
+            },
+          },
+          { new: true },
+        );
+        projectUpdated = !!updatedProject;
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Rendered video uploaded to Cloudinary successfully.",
+        url: secureUrl,
+        downloadUrl,
+        publicId: cloudinaryResult.publicId,
+        projectUpdated,
+        duration: cloudinaryResult.duration,
+        format: cloudinaryResult.format,
+        bytes: cloudinaryResult.bytes,
+      });
+    } catch (error) {
+      console.error("[Upload Rendered Video Error]:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to upload rendered video to Cloudinary.",
+      });
+    } finally {
+      await Promise.all(
+        [inputPath, normalizedPath]
+          .filter(Boolean)
+          .map((filePath) => fs.unlink(filePath).catch(() => {})),
+      );
+    }
+  },
+
+  /**
    * Health status endpoint
    */
   async healthCheck(req, res) {
@@ -344,3 +434,4 @@ export const captionController = {
     });
   },
 };
+

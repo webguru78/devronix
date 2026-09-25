@@ -44,13 +44,13 @@ router.post(
 );
 
 // GET /api/captions/projects (Get all saved projects)
-router.get("/projects", captionController.getProjects);
+router.get("/projects", requireAuth, captionController.getProjects);
 
 // GET /api/captions/projects/:id (Get single project)
-router.get("/projects/:id", captionController.getProjectById);
+router.get("/projects/:id", requireAuth, captionController.getProjectById);
 
 // PUT /api/captions/projects/:id (Update project captions and styles)
-router.put("/projects/:id", captionController.updateProject);
+router.put("/projects/:id", requireAuth, captionController.updateProject);
 
 // POST /api/captions/translate (Translate or transliterate captions)
 router.post("/translate", captionController.translateCaptions);
@@ -58,7 +58,16 @@ router.post("/translate", captionController.translateCaptions);
 // POST /api/captions/seo-metadata (Generate/Regenerate SEO titles, description, hashtags)
 router.post("/seo-metadata", captionController.generateSeoMetadata);
 
+// POST /api/captions/upload-rendered (Upload exported captioned video to Cloudinary)
+router.post(
+  "/upload-rendered",
+  requireAuth,
+  upload.single("video"),
+  captionController.uploadRenderedVideo,
+);
+
 // GET /api/captions/health
 router.get("/health", captionController.healthCheck);
 
 export default router;
+

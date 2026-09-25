@@ -247,7 +247,7 @@ export const ffmpegService = {
     startTime,
     duration,
     assSubtitlePath,
-    framingMode = "split_screen",
+    framingMode = "smart_blur",
     cropX = null,
     cropX1 = null,
     cropX2 = null,
@@ -405,6 +405,50 @@ export const ffmpegService = {
           } catch (copyErr) {
             reject(err);
           }
+        })
+        .run();
+    });
+  },
+
+  /**
+   * Re-encodes browser MediaRecorder output into a broadly playable MP4.
+   * Browser recordings can contain inconsistent timestamps or WebM codecs
+   * even when the filename says .mp4, so normalize them before CDN upload.
+   */
+  async normalizeRenderedVideo({ inputPath, outputPath }) {
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .inputOptions([
+          "-fflags +genpts",
+          "-avoid_negative_ts make_zero",
+        ])
+        .videoCodec("libx264")
+        .audioCodec("aac")
+        .outputOptions([
+          "-map 0:v:0",
+          "-map 0:a:0?",
+          "-preset veryfast",
+          "-threads 0",
+          "-crf 22",
+          "-pix_fmt yuv420p",
+          "-r 30",
+          "-g 30",
+          "-keyint_min 30",
+          "-sc_threshold 0",
+          "-vsync cfr",
+          "-ar 44100",
+          "-ac 2",
+          "-b:a 192k",
+          "-af aresample=async=1:first_pts=0",
+          "-movflags +faststart",
+          "-avoid_negative_ts make_zero",
+          "-shortest",
+        ])
+        .format("mp4")
+        .output(outputPath)
+        .on("end", () => resolve(outputPath))
+        .on("error", (err) => {
+          reject(new Error(`Rendered video normalization failed: ${err.message}`));
         })
         .run();
     });

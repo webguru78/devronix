@@ -80,11 +80,7 @@ export async function checkClipCredits(req, res, next) {
     }
 
     const { used = 0 } = req.user.clipCredits || {};
-    const rawLimit = req.user.clipCredits?.limit ?? 2;
-    const limit =
-      !req.user.plan || req.user.plan === "free"
-        ? Math.min(rawLimit, 2)
-        : rawLimit;
+    const limit = req.user.clipCredits?.limit ?? 2;
 
     if (used >= limit) {
       return res.status(403).json({

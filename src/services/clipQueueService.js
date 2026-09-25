@@ -232,7 +232,7 @@ class ClipQueueService {
         });
 
         // 1) Framing & Face/Subject Detection
-        const framingMode = job.framingMode || "center_crop";
+        const framingMode = job.framingMode || "smart_blur";
         let effectiveFramingMode = framingMode;
         let clipCropX = null;
         let clipCropX1 = null;
@@ -271,8 +271,8 @@ class ClipQueueService {
               );
             } else {
               // ONLY 1 SPEAKER in this camera shot (solo cut, monologue, or slide).
-              // Auto-switch to full vertical 9:16 center_crop to prevent repeating the same face/frame twice!
-              effectiveFramingMode = "center_crop";
+              // Keep the complete source visible instead of duplicating or hard-cropping it.
+              effectiveFramingMode = "smart_blur";
               clipCropX =
                 subjectInfo.singleCropX ??
                 Math.round(
@@ -282,14 +282,14 @@ class ClipQueueService {
                   ) / 2,
                 );
               console.log(
-                `[Clip Pipeline]: Clip ${clipNumber} — single speaker/subject detected. Auto-switching to center_crop (cropX=${clipCropX}) to prevent duplicate identical stacked frames.`,
+                `[Clip Pipeline]: Clip ${clipNumber} — single speaker/subject detected. Auto-switching to smart_blur to preserve the complete frame.`,
               );
             }
           } catch (faceErr) {
             console.warn(
               `[Clip Pipeline]: Dual-subject detection fallback for clip ${clipNumber}: ${faceErr.message}`,
             );
-            effectiveFramingMode = "center_crop";
+            effectiveFramingMode = "smart_blur";
             const scaledWidth1920 = Math.round(
               srcWidth * (1920 / (srcHeight || 1080)),
             );

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { User } from "../models/User.js";
+import { CaptionTemplate } from "../models/CaptionTemplate.js";
 import { emailService } from "../services/emailService.js";
 
 const JWT_SECRET =
@@ -29,6 +30,48 @@ function generateToken(user) {
  */
 function generateCryptoToken() {
   return crypto.randomBytes(32).toString("hex");
+}
+
+const DEFAULT_BRAND_KIT = {
+  name: "Creator Essentials",
+  primaryColor: "#0A0A0A",
+  accentColor: "#7C3AED",
+  highlightColor: "#F59E0B",
+  fontFamily: "Poppins",
+};
+
+function sanitizeBrandKit(brandKit = {}) {
+  const safe = { ...DEFAULT_BRAND_KIT, ...brandKit };
+  return {
+    name: typeof safe.name === "string" && safe.name.trim() ? safe.name.trim() : DEFAULT_BRAND_KIT.name,
+    primaryColor: typeof safe.primaryColor === "string" ? safe.primaryColor : DEFAULT_BRAND_KIT.primaryColor,
+    accentColor: typeof safe.accentColor === "string" ? safe.accentColor : DEFAULT_BRAND_KIT.accentColor,
+    highlightColor: typeof safe.highlightColor === "string" ? safe.highlightColor : DEFAULT_BRAND_KIT.highlightColor,
+    fontFamily: typeof safe.fontFamily === "string" && safe.fontFamily ? safe.fontFamily : DEFAULT_BRAND_KIT.fontFamily,
+  };
+}
+
+const ADMIN_EMAILS = new Set([
+  "info@devronix.agency",
+  "heyyusman996@gmail.com",
+  "devronixagency@gmail.com",
+]);
+
+function isAdminAccount(user) {
+  return (
+    user?.isAdmin === true ||
+    user?.plan === "admin" ||
+    ADMIN_EMAILS.has(String(user?.email || "").toLowerCase())
+  );
+}
+
+function serializeUser(user) {
+  const safeUser = user.toJSON();
+  if (isAdminAccount(user)) {
+    safeUser.isAdmin = true;
+    safeUser.plan = safeUser.plan === "free" ? "admin" : safeUser.plan;
+  }
+  return safeUser;
 }
 
 export const authController = {
@@ -157,7 +200,7 @@ export const authController = {
             message:
               "Your email is already verified! Welcome back to Verbatim AI.",
             token: jwtToken,
-            user: user.toJSON(),
+            user: serializeUser(user),
           });
         }
 
@@ -165,6 +208,14 @@ export const authController = {
           success: false,
           message:
             "Invalid or expired verification link. Please request a new verification email.",
+        });
+      }
+
+      if (user.isActive === false) {
+        return res.status(403).json({
+          success: false,
+          code: "ACCOUNT_DEACTIVATED",
+          message: "This account has been deactivated. Contact support.",
         });
       }
 
@@ -186,7 +237,7 @@ export const authController = {
         message:
           "Your email has been verified successfully! Welcome to Verbatim AI.",
         token: jwtToken,
-        user: user.toJSON(),
+        user: serializeUser(user),
       });
     } catch (error) {
       console.error("[Auth Verify Error]:", error);
@@ -296,6 +347,14 @@ export const authController = {
         });
       }
 
+      if (user.isActive === false) {
+        return res.status(403).json({
+          success: false,
+          code: "ACCOUNT_DEACTIVATED",
+          message: "This account has been deactivated. Contact support.",
+        });
+      }
+
       const isMatch = await user.comparePassword(password);
       if (!isMatch) {
         return res.status(401).json({
@@ -326,7 +385,7 @@ export const authController = {
         success: true,
         message: "Logged in successfully.",
         token: jwtToken,
-        user: user.toJSON(),
+        user: serializeUser(user),
       });
     } catch (error) {
       console.error("[Auth Login Error]:", error);
@@ -359,10 +418,53 @@ export const authController = {
       const user = req.user;
       return res.status(200).json({
         success: true,
-        user: user.toJSON(),
+        user: serializeUser(user),
       });
     } catch (error) {
       return res.status(500).json({ success: false, message: error.message });
+    }
+  },
+
+  /**
+   * GET /api/auth/brand-kit
+   */
+  async getBrandKit(req, res) {
+    try {
+      const user = req.user;
+      const brandKit = sanitizeBrandKit(user.brandKit);
+      return res.status(200).json({
+        success: true,
+        brandKit,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to fetch brand kit.",
+      });
+    }
+  },
+
+  /**
+   * PUT /api/auth/brand-kit
+   */
+  async updateBrandKit(req, res) {
+    try {
+      const { brandKit } = req.body || {};
+      const normalized = sanitizeBrandKit(brandKit);
+      const user = req.user;
+      user.brandKit = normalized;
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Brand kit saved successfully.",
+        brandKit: normalized,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to save brand kit.",
+      });
     }
   },
 
@@ -508,8 +610,7 @@ export const authController = {
       const captionRemaining = Math.max(0, captionLimit - captionUsed);
 
       const clipUsed = user.clipCredits?.used || 0;
-      const rawClipLimit = user.clipCredits?.limit ?? 2;
-      const clipLimit = (!user.plan || user.plan === "free") ? Math.min(rawClipLimit, 2) : rawClipLimit;
+      const clipLimit = user.clipCredits?.limit ?? 2;
       const clipRemaining = Math.max(0, clipLimit - clipUsed);
 
       return res.status(200).json({
@@ -532,6 +633,203 @@ export const authController = {
         success: false,
         message: error.message || "Failed to fetch credit balance.",
       });
+    }
+  },
+
+  async getAdminStats(req, res) {
+    try {
+      const [totalUsers, verifiedUsers, adminUsers, planStats] = await Promise.all([
+        User.countDocuments(),
+        User.countDocuments({ isVerified: true }),
+        User.countDocuments({ $or: [{ isAdmin: true }, { plan: "admin" }] }),
+        User.aggregate([{ $group: { _id: "$plan", count: { $sum: 1 } } }]),
+      ]);
+
+      const usage = await User.aggregate([
+        {
+          $group: {
+            _id: null,
+            totalCaptionUsed: { $sum: { $ifNull: ["$captionCredits.used", 0] } },
+            totalClipUsed: { $sum: { $ifNull: ["$clipCredits.used", 0] } },
+            totalCaptionLimit: { $sum: { $ifNull: ["$captionCredits.limit", 5] } },
+            totalClipLimit: { $sum: { $ifNull: ["$clipCredits.limit", 2] } },
+          },
+        },
+      ]);
+
+      const planMap = Object.fromEntries(
+        (planStats || []).map((item) => [item._id || "free", item.count]),
+      );
+
+      return res.status(200).json({
+        success: true,
+        stats: {
+          totalUsers,
+          verifiedUsers,
+          adminUsers,
+          planCounts: planMap,
+          totalCaptionUsed: usage[0]?.totalCaptionUsed || 0,
+          totalClipUsed: usage[0]?.totalClipUsed || 0,
+          totalCaptionLimit: usage[0]?.totalCaptionLimit || 0,
+          totalClipLimit: usage[0]?.totalClipLimit || 0,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to fetch admin stats.",
+      });
+    }
+  },
+
+  async getAdminUsers(req, res) {
+    try {
+      const users = await User.find({}).sort({ createdAt: -1 }).lean();
+
+      const safeUsers = users.map((user) => ({
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        plan: user.plan || "free",
+        isAdmin: !!user.isAdmin,
+        isActive: user.isActive !== false,
+        isVerified: !!user.isVerified,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+        captionCredits: {
+          used: user.captionCredits?.used || 0,
+          limit: user.captionCredits?.limit || 5,
+        },
+        clipCredits: {
+          used: user.clipCredits?.used || 0,
+          limit: user.clipCredits?.limit || 2,
+        },
+      }));
+
+      return res.status(200).json({ success: true, users: safeUsers });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to fetch user list.",
+      });
+    }
+  },
+
+  async updateAdminUser(req, res) {
+    try {
+      const { userId } = req.params;
+      const { plan, isAdmin, isVerified, isActive, captionLimit, clipLimit, password } = req.body || {};
+
+      const user = await User.findById(userId);
+      if (!user) {
+        return res.status(404).json({ success: false, message: "User not found." });
+      }
+
+      if (typeof plan === "string" && ["free", "starter", "pro", "enterprise", "admin"].includes(plan)) {
+        user.plan = plan;
+      }
+
+      if (typeof isAdmin === "boolean") {
+        user.isAdmin = isAdmin;
+      }
+
+      if (typeof isVerified === "boolean") {
+        user.isVerified = isVerified;
+      }
+
+      if (typeof isActive === "boolean") {
+        user.isActive = isActive;
+      }
+
+      if (user.plan === "admin" || user.isAdmin) {
+        user.isAdmin = true;
+        user.plan = "admin";
+      }
+
+      const safeCaptionLimit = Number(captionLimit);
+      if (Number.isFinite(safeCaptionLimit) && safeCaptionLimit >= 0) {
+        user.captionCredits = {
+          ...(user.captionCredits || { used: 0, limit: 5 }),
+          limit: safeCaptionLimit,
+        };
+      }
+
+      const safeClipLimit = Number(clipLimit);
+      if (Number.isFinite(safeClipLimit) && safeClipLimit >= 0) {
+        user.clipCredits = {
+          ...(user.clipCredits || { used: 0, limit: 2 }),
+          limit: safeClipLimit,
+        };
+      }
+
+      if (typeof password === "string" && password.trim().length >= 6) {
+        user.password = password.trim();
+      }
+
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "User settings updated successfully.",
+        user: user.toJSON(),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to update user settings.",
+      });
+    }
+  },
+
+  async getAdminTemplates(req, res) {
+    try {
+      const templates = await CaptionTemplate.find({ isActive: true }).sort({ createdAt: -1 });
+      return res.status(200).json({ success: true, templates });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Failed to fetch templates." });
+    }
+  },
+
+  async createAdminTemplate(req, res) {
+    try {
+      const { name, description, badge, collection, settings } = req.body || {};
+      if (!name || !settings) {
+        return res.status(400).json({ success: false, message: "Template name and settings are required." });
+      }
+      const template = await CaptionTemplate.create({
+        name: name.trim(),
+        description: description || "Admin-created caption style",
+        badge: badge || "CUSTOM",
+        collection: collection || "admin_templates",
+        settings,
+        createdBy: req.user._id,
+      });
+      return res.status(201).json({ success: true, template });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Failed to create template." });
+    }
+  },
+
+  async deleteAdminTemplate(req, res) {
+    try {
+      const deleted = await CaptionTemplate.findByIdAndUpdate(req.params.templateId, { isActive: false }, { new: true });
+      if (!deleted) return res.status(404).json({ success: false, message: "Template not found." });
+      return res.status(200).json({ success: true, message: "Template removed." });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Failed to remove template." });
+    }
+  },
+
+  async deleteAdminUser(req, res) {
+    try {
+      if (String(req.user._id) === String(req.params.userId)) {
+        return res.status(400).json({ success: false, message: "You cannot delete your own admin account." });
+      }
+      const deleted = await User.findByIdAndDelete(req.params.userId);
+      if (!deleted) return res.status(404).json({ success: false, message: "User not found." });
+      return res.status(200).json({ success: true, message: "User deleted." });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: error.message || "Failed to delete user." });
     }
   },
 };

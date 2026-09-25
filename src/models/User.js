@@ -9,6 +9,17 @@ const CreditFieldSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const BrandKitSchema = new mongoose.Schema(
+  {
+    name: { type: String, default: "Creator Essentials" },
+    primaryColor: { type: String, default: "#0A0A0A" },
+    accentColor: { type: String, default: "#7C3AED" },
+    highlightColor: { type: String, default: "#F59E0B" },
+    fontFamily: { type: String, default: "Poppins" },
+  },
+  { _id: false },
+);
+
 const UserSchema = new mongoose.Schema(
   {
     name: {
@@ -63,6 +74,16 @@ const UserSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    brandKit: {
+      type: BrandKitSchema,
+      default: () => ({
+        name: "Creator Essentials",
+        primaryColor: "#0A0A0A",
+        accentColor: "#7C3AED",
+        highlightColor: "#F59E0B",
+        fontFamily: "Poppins",
+      }),
+    },
     // Credits tracked separately per feature
     captionCredits: {
       type: CreditFieldSchema,
@@ -81,6 +102,11 @@ const UserSchema = new mongoose.Schema(
     isAdmin: {
       type: Boolean,
       default: false,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
     },
   },
   {
@@ -108,9 +134,6 @@ UserSchema.methods.toJSON = function () {
   delete obj.verificationTokenExpiry;
   delete obj.resetPasswordToken;
   delete obj.resetPasswordExpiry;
-  if ((!obj.plan || obj.plan === "free") && obj.clipCredits) {
-    obj.clipCredits.limit = Math.min(obj.clipCredits.limit ?? 2, 2);
-  }
   return obj;
 };
 

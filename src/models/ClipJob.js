@@ -54,11 +54,11 @@ const ClipJobSchema = new mongoose.Schema(
     },
     durationSeconds: { type: Number, default: 0 },
     language: { type: String, default: "roman_urdu" },
-    templateId: { type: String, default: "hormozi_gold_impact" },
+    templateId: { type: String, default: "bold_creator_01" },
     framingMode: {
       type: String,
       enum: ["split_screen", "center_crop", "smart_blur", "fit"],
-      default: "split_screen",
+      default: "smart_blur",
     },
     status: {
       type: String,

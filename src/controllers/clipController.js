@@ -69,7 +69,7 @@ export const clipController = {
       const { youtubeUrl, title, language, templateId, framingMode } = req.body;
       const targetLanguage = language || "roman_urdu";
       const targetTemplate = templateId || "hormozi_gold_impact";
-      const targetFraming = framingMode || "center_crop";
+      const targetFraming = framingMode || "smart_blur";
 
       if (!youtubeUrl) {
         return res.status(400).json({
@@ -186,7 +186,7 @@ export const clipController = {
       const { title, language, templateId, framingMode } = req.body;
       const targetLanguage = language || "roman_urdu";
       const targetTemplate = templateId || "hormozi_gold_impact";
-      const targetFraming = framingMode || "center_crop";
+      const targetFraming = framingMode || "smart_blur";
 
       if (!req.file) {
         return res.status(400).json({
@@ -484,7 +484,7 @@ export const clipController = {
           }
 
           // 3. Generate ASS file
-          const effectiveTemplate = clip.templateId || "hormozi_gold_impact";
+          const effectiveTemplate = clip.templateId || "bold_creator_01";
           const assContent = generateAssSubtitles(
             wordsForAss,
             0,

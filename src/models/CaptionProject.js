@@ -44,8 +44,17 @@ const CaptionStyleSchema = new mongoose.Schema(
 
 const CaptionProjectSchema = new mongoose.Schema(
   {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
     title: { type: String, required: true, trim: true },
     videoUrl: { type: String, required: true },
+    outputUrl: { type: String, default: null },
+    downloadUrl: { type: String, default: null },
+    outputPublicId: { type: String, default: null },
     publicId: { type: String },
     duration: { type: String },
     durationSeconds: { type: Number, default: 0 },

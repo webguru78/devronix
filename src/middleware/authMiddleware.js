@@ -48,6 +48,14 @@ export async function requireAuth(req, res, next) {
       });
     }
 
+    if (user.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_DEACTIVATED",
+        message: "This account has been deactivated. Contact support.",
+      });
+    }
+
     req.user = user;
     req.userId = user._id.toString();
     return next();
@@ -86,6 +94,39 @@ export function requireVerified(req, res, next) {
       isUnverified: true,
       email: req.user.email,
       message: "Please verify your email address to access this feature.",
+    });
+  }
+
+  return next();
+}
+
+/**
+ * requireAdmin: Enforces that the user has admin privileges.
+ */
+export function requireAdmin(req, res, next) {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      code: "AUTH_REQUIRED",
+      message: "Please log in first.",
+    });
+  }
+
+  const adminEmails = new Set([
+    "info@devronix.agency",
+    "heyyusman996@gmail.com",
+    "devronixagency@gmail.com",
+  ]);
+  const isAdminUser =
+    req.user.isAdmin === true ||
+    req.user.plan === "admin" ||
+    adminEmails.has(String(req.user.email || "").toLowerCase());
+
+  if (!isAdminUser) {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_REQUIRED",
+      message: "Admin access required.",
     });
   }
 

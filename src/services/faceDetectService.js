@@ -301,11 +301,13 @@ export const faceDetectService = {
     const maxCropX1920 = Math.max(0, scaledWidth1920 - 1080);
 
     const fallbackResult = {
-      isSplit: true,
+      // Never duplicate an uncertain/single-speaker frame into two panels.
+      // A split is only safe after two distinct regions are actually detected.
+      isSplit: false,
       cropX1: 0,
       cropX2: maxCropX960,
       singleCropX: Math.round(maxCropX1920 / 2),
-      subjectsCount: 2,
+      subjectsCount: 1,
     };
 
     try {
